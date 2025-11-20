@@ -1,0 +1,88 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import joblib
+import time
+from collections import deque
+
+# Load the trained model and helper files
+clf = joblib.load("hand_model.pkl")          # trained RandomForest model
+scaler = joblib.load("scaler.pkl")           # StandardScaler for normalization
+le = joblib.load("label_encoder.pkl")        # LabelEncoder for class names
+
+#Initialise Mediapipe Hands
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(
+    static_image_mode=False,                 
+    max_num_hands=1,                         
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
+
+mp_draw = mp.solutions.drawing_utils         
+
+#Prediction history
+pred_history = deque(maxlen=5)
+last_time = 0
+delay = 1.0   # seconds between accepted letters
+current_word = ""
+
+# Normalise landmarks
+def center_and_scale_array(sample):
+    sample = np.array(sample).reshape((-1, 3))
+    wrist = sample[0]
+    coords = sample - wrist
+    dists = np.linalg.norm(coords, axis=1)
+    scale = dists.max() if dists.max() > 1e-6 else 1.0
+    coords = coords / scale
+    return coords.flatten()
+
+# Open camera 
+cap = cv2.VideoCapture(0)                    
+
+print("Starting camera... Press 'q' to quit.")
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    frame = cv2.flip(frame, 1)               
+    img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = hands.process(img_rgb)         
+
+    if results.multi_hand_landmarks:
+        for handLms in results.multi_hand_landmarks:
+            mp_draw.draw_landmarks(frame, handLms, mp_hands.HAND_CONNECTIONS)
+
+            row = []
+            for lm in handLms.landmark:
+                row.extend([lm.x, lm.y, lm.z])
+
+            X_proc = center_and_scale_array(row)
+            X_scaled = scaler.transform([X_proc])
+            pred = clf.predict(X_scaled)
+            letter = le.inverse_transform(pred)[0]
+
+            #Prediction Stabilisation
+            pred_history.append(letter)
+
+            if len(pred_history) == pred_history.maxlen and all(l == pred_history[0] for l in pred_history):
+                current_time = time.time()
+                if current_time - last_time > delay:
+                    current_word += letter
+                    print("Current word:", current_word)
+                    last_time = current_time
+                    pred_history.clear()
+
+            cv2.putText(frame, f"Prediction: {letter}", (10, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+    cv2.putText(frame, f"Word: {current_word}", (10, 80),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+
+    cv2.imshow("Realtime Sign Recognition", frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
