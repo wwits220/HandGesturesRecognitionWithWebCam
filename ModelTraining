@@ -1,0 +1,93 @@
+import os
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+import joblib
+import matplotlib.pyplot as plt
+import seaborn as sns
+import collections
+
+
+
+CSV_PATH = r"YOUR_Path\hand_signs.csv"
+OUT_MODEL = "hand_model.pkl"
+OUT_SCALER = "scaler.pkl"
+OUT_ENCODER = "label_encoder.pkl"
+
+df = pd.read_csv(CSV_PATH)
+print("Loaded:", df.shape)
+
+df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
+
+# X, y
+X = df.drop("label", axis=1).values
+y = df["label"].values
+
+counts = collections.Counter(y)
+print("Class counts:", counts)
+
+mask = [counts[label] >= 2 for label in y]
+X = X[mask]
+y = y[mask]
+
+print("Features count:", X.shape[1])
+if X.shape[1] != 63:
+    raise ValueError(f"not found{X.shape[1]}")
+
+# Center + scale
+def center_and_scale_array(X):
+    X2 = X.reshape((-1, 21, 3))
+    out = []
+    for sample in X2:
+        wrist = sample[0]
+        coords = sample - wrist
+        dists = np.linalg.norm(coords, axis=1)
+        scale = dists.max() if dists.max() > 1e-6 else 1.0
+        coords = coords / scale
+        out.append(coords.flatten())
+    return np.array(out)
+
+X_proc = center_and_scale_array(X)
+
+# Standardise
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X_proc)
+
+# Encode labels 
+le = LabelEncoder()
+y_enc = le.fit_transform(y)
+classes = le.classes_
+print("Classes:", classes)
+
+# Train/test split
+X_train, X_test, y_train, y_test = train_test_split(
+    X_scaled, y_enc, test_size=0.2, random_state=42, stratify=y_enc
+)
+
+# Train model
+clf = RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=42)
+clf.fit(X_train, y_train)
+
+# Evaluation
+y_pred = clf.predict(X_test)
+print("Accuracy:", accuracy_score(y_test, y_pred))
+print(classification_report(y_test, y_pred, target_names=le.classes_))
+
+if len(classes) <= 30:
+    cm = confusion_matrix(y_test, y_pred)
+    plt.figure(figsize=(8,6))
+    sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes)
+    plt.xlabel("Predicted"); plt.ylabel("True")
+    plt.title("Confusion matrix")
+    plt.tight_layout()
+    plt.savefig("confusion_matrix.png")
+    print("Saved confusion_matrix.png")
+
+# Save
+joblib.dump(clf, OUT_MODEL)
+joblib.dump(scaler, OUT_SCALER)
+joblib.dump(le, OUT_ENCODER)
+print("Saved model, scaler, encoder")
